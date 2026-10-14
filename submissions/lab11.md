@@ -98,21 +98,29 @@ All required development tools were available.
 
 ### Discussion
 
-**a. Why is `flake.lock` important?**
+**a. Why might `go build` produce different outputs on two machines, even from the same Git commit?**
 
-`flake.lock` records the exact revisions and hashes of the flake inputs. This prevents unexpected dependency changes and allows different machines to use the same dependency versions.
+The builds may use different Go versions, dependency versions, build flags, paths, or environment settings. Build metadata, timestamps, and Go build IDs can also affect the output. The same Git commit does not guarantee an identical build environment.
 
-**b. How does Nix improve build reproducibility?**
+**b. What exactly does `vendorHash` represent? What happens if `vendorHash = null`?**
 
-Nix provides a declarative build environment with pinned dependencies. It reduces differences caused by system packages, toolchain versions, and host configurations.
+`vendorHash` is the Nix hash of the dependency tree produced during the Go module vendoring step. It allows Nix to verify that the downloaded dependencies match the expected contents.
 
-**c. Why is `CGO_ENABLED=0` used?**
+Setting `vendorHash = null` skips the dependency vendoring step. This is appropriate for QuickNotes because it uses only the Go standard library and has no external Go module dependencies.
 
-Disabling CGO removes the dependency on the system C toolchain and C libraries. This makes the Go binary easier to distribute and run in minimal containers.
+**c. Why is `flake.lock` essential for reproducibility? What happens if it is deleted before the second build?**
 
-**d. What is the purpose of a Nix development shell?**
+`flake.lock` records the exact revision and content hash of `nixpkgs`. This ensures that independent builds use the same pinned dependencies and toolchain.
 
-A Nix development shell provides a consistent set of development tools without requiring manual installation. Developers can use the same toolchain versions across different machines.
+If it is deleted, Nix must resolve the input again. The channel may have advanced to a newer revision, potentially changing the build environment and the resulting hashes.
+
+**d. What is the difference between `buildGoModule` and `buildGoApplication`? Which is more suitable for QuickNotes?**
+
+`buildGoModule` is the standard Go builder provided by nixpkgs. It supports Go modules and integrates with the Nix dependency and build system.
+
+`buildGoApplication` is commonly provided by the external `buildGo.nix` tooling and uses a different approach to configuring Go builds and dependencies.
+
+I chose `buildGoModule` because QuickNotes is a small Go module, has no external dependencies, and can be built directly using the pinned nixpkgs toolchain.
 
 ---
 
@@ -228,17 +236,29 @@ The comparison demonstrates that the tested Nix configuration produced reproduci
 
 ### Discussion
 
-**e. Why use `dockerTools.buildImage` instead of a Dockerfile?**
+**e. Why can `docker build` produce non-identical images from the same Dockerfile and Git commit?**
 
-`dockerTools.buildImage` builds Docker images using Nix derivations. It allows dependencies and image contents to be managed declaratively and supports building images without a Docker daemon.
+Docker builds may include timestamps, generated layer metadata, changing base-image tags, or packages downloaded from repositories that are not pinned to exact versions.
 
-**f. Why did the Nix Docker builds produce identical hashes?**
+Even when the application source is unchanged, these external inputs and metadata can make the resulting image digests differ.
 
-Both builds used identical source code, pinned dependencies, and the same Nix build configuration. Nix generated deterministic image archives, resulting in matching SHA-256 hashes.
+In this experiment, two Dockerfile builds produced different image IDs, while the independently generated Nix image archives had identical SHA-256 hashes.
 
-**g. Does this mean Dockerfile builds cannot be reproducible?**
+**f. What can a security auditor verify with a reproducible image that cannot be established by a signature alone?**
 
-No. Dockerfile builds can also be reproducible if base images, dependencies, timestamps, and build metadata are controlled. However, the two Dockerfile builds in this experiment produced different image IDs.
+A signature confirms that an image was signed by a particular identity, but it does not independently prove that the image was built from the claimed source code.
+
+With a reproducible build, an auditor can independently rebuild the image from the reviewed source and pinned dependencies, then compare its digest with the distributed artifact.
+
+A matching digest provides strong evidence that the distributed image corresponds to the independently verified build.
+
+**g. What are the trade-offs of Nix reproducibility? Why is `docker build` still widely used?**
+
+Nix provides stronger control over dependencies and build environments, but it introduces a learning curve, its own configuration language, and additional tooling.
+
+Dockerfiles are more familiar to most development teams and integrate easily with existing CI/CD platforms, registries, and container workflows.
+
+For many teams, Docker offers a simpler development experience, while Nix is useful when strict reproducibility and dependency control are priorities.
 
 ---
 
@@ -315,17 +335,31 @@ Both independently generated hashes matched, and all three jobs completed succes
 
 ### Discussion
 
-**h. Why are two independent GitHub Actions runners used?**
+**h. Why is reproducibility verified in CI more valuable to a security auditor than reproducibility demonstrated only on a developer's laptop?**
 
-Independent runners help verify that the build result does not depend on a particular machine's local state or build cache.
+A local reproducibility test may depend on the developer's machine, installed tools, or cached dependencies.
 
-**i. Why compare SHA-256 hashes?**
+CI performs the verification in a documented and independently provisioned environment. It also creates logs and results that other people can inspect.
 
-SHA-256 produces a fingerprint of the generated archive. Matching hashes provide strong evidence that both archives contain identical bytes.
+This makes the reproducibility claim easier to verify and provides evidence that the check runs automatically as part of the development process.
 
-**j. Why demonstrate both a red and a green run?**
+**i. Why use two parallel jobs instead of building twice in one job?**
 
-The red run verifies that the workflow detects mismatches and fails correctly. The green run demonstrates that the independent builds produce matching hashes when the comparison uses their actual outputs.
+Two parallel jobs run on separate fresh runners with independent environments and caches.
+
+Running two builds in a single job could reuse local artifacts, caches, or other machine state. This could hide differences that would appear in genuinely independent builds.
+
+Separate jobs provide stronger evidence that the result does not depend on the state of one runner.
+
+**j. Where can timestamps affect a Nix build, and how does `dockerTools.buildImage` handle them?**
+
+Timestamps can enter build outputs through generated files, archive metadata, compiler-generated metadata, or container image layers.
+
+`SOURCE_DATE_EPOCH` is commonly used to provide a fixed timestamp for reproducible builds.
+
+`dockerTools.buildImage` uses deterministic image metadata, including a fixed creation timestamp by default, rather than inserting the current build time.
+
+This helps ensure that identical inputs produce identical image archives.
 
 ---
 
