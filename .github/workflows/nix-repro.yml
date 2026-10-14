@@ -1,0 +1,71 @@
+name: Nix Reproducibility
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@2cb76beab460be7e44442c7ebdcbc30b638416df
+
+      - name: Build Docker image
+        run: nix build .#docker
+
+      - name: Calculate SHA-256
+        run: sha256sum "$(readlink -f result)" | awk '{print $1}' > hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-1
+          path: hash.txt
+
+  build-2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@2cb76beab460be7e44442c7ebdcbc30b638416df
+
+      - name: Build Docker image
+        run: nix build .#docker
+
+      - name: Calculate SHA-256
+        run: sha256sum "$(readlink -f result)" | awk '{print $1}' > hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-2
+          path: hash.txt
+
+  compare:
+    needs: [build-1, build-2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hash-1
+          path: first
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: hash-2
+          path: second
+
+      - name: Compare SHA-256
+        run: |
+          HASH1=$(cat first/hash.txt)
+          HASH2="intentionally-different-hash"
+
+          echo "Build 1: $HASH1"
+          echo "Build 2: $HASH2"
+
+          if [ "$HASH1" != "$HASH2" ]; then
+            echo "Reproducibility check failed!"
+            exit 1
+          fi
+
+          echo "Reproducibility check passed!"
